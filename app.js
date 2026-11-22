@@ -1,4 +1,4 @@
-import { renderNwb, resolveLink, VIEWER_CSS } from "./viewer.js?v=2026-11-22d";
+import { renderNwb, resolveLink, VIEWER_CSS } from "./viewer.js?v=2026-11-22e";
 
 const style = document.createElement("style");
 style.textContent = VIEWER_CSS;
@@ -10,7 +10,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 // ------------------------------------------------------------------ Python worker
 const PYODIDE_CDN = "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/";
 const params = new URLSearchParams(location.search);
-const BUILD = "2026-11-22d"; // bump on every release so browsers fetch the new worker
+const BUILD = "2026-11-22e"; // bump on every release so browsers fetch the new worker
 const worker = new Worker(`worker.js?v=${BUILD}`);
 let pyReady = false;
 let msgId = 0;

@@ -1,7 +1,7 @@
 // NWB viewer UI. All file reading happens in h5worker.js; this module draws and navigates.
 // renderNwb(el, source, name): source is a Uint8Array, a File, or {url, size}.
 
-const VERSION = "2026-11-22d";
+const VERSION = "2026-11-22e";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const PALETTE = ["#2a6fdb", "#e8590c", "#2b9348", "#9c36b5", "#c92a2a", "#0b7285", "#5c940d", "#d6336c"];
 const BAND = ["rgba(42,111,219,.14)", "rgba(232,89,12,.14)", "rgba(43,147,72,.14)", "rgba(156,54,181,.14)", "rgba(201,42,42,.14)", "rgba(11,114,133,.14)"];
@@ -78,6 +78,7 @@ function fmtDur(s) {
 }
 function fmtT(t) { return Math.abs(t) >= 1000 ? t.toFixed(0) : Math.abs(t) >= 10 ? t.toFixed(1) : t.toFixed(2); }
 function fmtBytes(b) { if (b < 1024) return `${b} B`; if (b < 1048576) return `${(b / 1024).toFixed(0)} KB`; if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`; return `${(b / 1073741824).toFixed(2)} GB`; }
+const short = (name, max = 22) => { const n = name.replace(/^PoseEstimationSeries/, ""); return n.length > max ? n.slice(0, max - 1) + "…" : n; };
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || undefined;
 const row = (label, value) => (value === null || value === undefined || value === "" ? "" : `<div class="nv-row"><dt>${esc(label)}</dt><dd>${value}</dd></div>`);
 const card = (icon, title, body) => `<section class="nv-card"><h3><span class="nv-ico">${icon}</span>${esc(title)}</h3><dl>${body || '<span class="nv-dim">Not recorded in this file.</span>'}</dl></section>`;
@@ -114,7 +115,7 @@ class View {
     this.trials = null;
     this.selected = [];
     // prefer small, behaviour-like series first; skip huge multichannel arrays by default
-    const pref = (s) => (/wheel|pupil|lick|speed|velocity|running|position/i.test(s.name) ? 0 : 1);
+    const pref = (s) => (s.type === "PoseEstimationSeries" ? 2 : /wheel|pupil|lick|speed|velocity|running|position/i.test(s.name) ? 0 : 1);
     const small = this.series.filter((s) => (s.shape[1] || 1) <= 8 && s.n <= 5e7).sort((a, b) => pref(a) - pref(b) || /smooth/i.test(a.name) - /smooth/i.test(b.name));
     this.selected = (small.length ? small : this.series).slice(0, 3).map((s) => s.path);
     if (this.units && this.selected.length < 3) this.selected.push("__raster__");
@@ -417,12 +418,12 @@ with NWBHDF5IO("${esc(this.filename)}") as io:
         return;
       }
       const { s, r, cols, ncols } = res;
-      yaxis.title = { text: `${esc(s.name)}<br><span style="font-size:10px">${esc(s.unit)}</span>`, font: { size: 11 } };
+      yaxis.title = { text: `${esc(short(s.name, 18))}<br><span style="font-size:10px">${esc(s.unit)}</span>`, font: { size: 11 } };
       layout[`yaxis${ax}`] = yaxis;
       r.cols.forEach((c, j) => {
         const cname = s.colNames?.[cols[j]] || (ncols > 1 ? `ch ${cols[j]}` : "");
         traces.push({ x: r.t, y: c, type: "scattergl", mode: "lines", xaxis: "x", yaxis: `y${ax}`,
-          name: ncols > 1 ? `${s.name}: ${cname}` : s.name, line: { width: 1.2, color: PALETTE[(i + j * 3) % PALETTE.length] },
+          name: ncols > 1 ? `${short(s.name)}: ${cname}` : short(s.name, 40), line: { width: 1.2, color: PALETTE[(i + j * 3) % PALETTE.length] },
           hovertemplate: `%{y:.4g} ${esc(s.unit)}<extra>${esc(s.name)}${cname ? " " + esc(cname) : ""}</extra>` });
       });
       if (ncols > cols.length) traces[traces.length - 1].name += ` (+${ncols - cols.length} more channels not drawn)`;
