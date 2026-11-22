@@ -1,4 +1,4 @@
-import { renderNwb, VIEWER_CSS } from "./viewer.js?v=2026-11-22b";
+import { renderNwb, resolveLink, VIEWER_CSS } from "./viewer.js?v=2026-11-22c";
 
 const style = document.createElement("style");
 style.textContent = VIEWER_CSS;
@@ -10,7 +10,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 // ------------------------------------------------------------------ Python worker
 const PYODIDE_CDN = "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/";
 const params = new URLSearchParams(location.search);
-const BUILD = "2026-11-22b"; // bump on every release so browsers fetch the new worker
+const BUILD = "2026-11-22c"; // bump on every release so browsers fetch the new worker
 const worker = new Worker(`worker.js?v=${BUILD}`);
 let pyReady = false;
 let msgId = 0;
@@ -591,19 +591,38 @@ async function viewBytes(bytes, name, target) {
     location.hash = "#view";
     target = $("#viewOut");
   }
-  try { await renderNwb(target, new Uint8Array(bytes), name); }
+  await viewSource(new Uint8Array(bytes), name, target);
+}
+
+async function viewSource(source, name, target = $("#viewOut")) {
+  try { await renderNwb(target, source, name); }
   catch (e) { target.innerHTML = `<div class="nv-err">Couldn't open ${esc(name)}: ${esc(e.message || e)}</div>`; }
   if (target.id === "viewOut") target.scrollIntoView({ behavior: "smooth" });
 }
 
-setupDrop($("#viewDrop"), $("#viewPick"), async (files) => {
-  const f = files[0];
-  viewBytes(new Uint8Array(await f.arrayBuffer()), f.name, $("#viewOut"));
-});
-$("#viewExample").addEventListener("click", async (e) => {
-  e.stopPropagation();
+const IBL_EXAMPLE = "https://api.dandiarchive.org/api/assets/773516a9-bd20-4b46-adad-2a1d5772be5d/download/";
+
+async function openLink(link) {
+  const out = $("#viewOut");
+  out.innerHTML = `<div class="nv-loading"><span class="spinner"></span>Looking up the file…</div>`;
+  try {
+    const r = await resolveLink(link);
+    const p = new URLSearchParams(location.search);
+    p.set("url", link);
+    history.replaceState(null, "", `${location.pathname}?${p}#view`);
+    await viewSource({ url: r.url, size: r.size }, r.name, out);
+  } catch (e) {
+    out.innerHTML = `<div class="nv-err">${esc(e.message || e)}</div>`;
+  }
+}
+
+setupDrop($("#viewDrop"), $("#viewPick"), (files) => viewSource(files[0], files[0].name));
+$("#viewUrlForm").addEventListener("submit", (e) => { e.preventDefault(); const v = $("#viewUrl").value.trim(); if (v) openLink(v); });
+$("#viewExample").addEventListener("click", async () => {
   const r = await fetch("template/example.nwb");
-  viewBytes(new Uint8Array(await r.arrayBuffer()), "sub-AAX-1_ses-day1.nwb", $("#viewOut"));
+  viewSource(new Uint8Array(await r.arrayBuffer()), "sub-AAX-1_ses-day1.nwb");
 });
+$("#viewIbl").addEventListener("click", () => { $("#viewUrl").value = IBL_EXAMPLE; openLink(IBL_EXAMPLE); });
+if (params.get("url")) { $("#viewUrl").value = params.get("url"); if ((location.hash || "") === "#view") openLink(params.get("url")); }
 
 route();

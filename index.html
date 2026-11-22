@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NWB File Creator</title>
 <meta name="description" content="Make and explore Neurodata Without Borders (NWB) files in your browser, step by step. Your data never leaves your computer.">
-<link rel="stylesheet" href="style.css?v=2026-11-22b">
+<link rel="stylesheet" href="style.css?v=2026-11-22c">
 <script src="vendor/plotly/plotly-basic.min.js"></script>
 </head>
 <body>
@@ -45,10 +45,19 @@
   <!-- VIEWER -->
   <section id="view" data-screen class="hidden">
     <div class="viewer">
-      <div id="viewDrop" class="drop" tabindex="0">
-        <span class="big">📂</span><strong>Drop an .nwb file here</strong>or click to choose one. It is opened in this tab and never uploaded.
-        <input id="viewPick" type="file" accept=".nwb,.h5,.hdf5" hidden>
-        <div style="margin-top:12px"><button class="btn soft" id="viewExample" type="button">Open the example file</button></div>
+      <div class="viewsrc">
+        <div id="viewDrop" class="drop" tabindex="0">
+          <span class="big">📂</span><strong>Drop an .nwb file here</strong>or click to choose one. Big files are fine: only the parts you look at are read.
+          <input id="viewPick" type="file" accept=".nwb,.h5,.hdf5" hidden>
+        </div>
+        <form id="viewUrlForm" class="urlbox">
+          <strong>…or open one from DANDI</strong>
+          <span class="nv-dim" style="font-size:.9rem">Paste a DANDI download link or a Neurosift link.</span>
+          <div class="urlrow"><input id="viewUrl" type="url" placeholder="https://api.dandiarchive.org/api/assets/…/download/" autocomplete="off"><button class="btn" type="submit">Open</button></div>
+          <div class="examples"><span class="nv-dim">Try:</span>
+            <button class="btn soft" id="viewExample" type="button">Workshop example (small)</button>
+            <button class="btn soft" id="viewIbl" type="button">IBL Brain Wide Map session (big)</button></div>
+        </form>
       </div>
       <div id="viewOut" style="margin-top:22px"></div>
     </div>
@@ -57,6 +66,6 @@
 <footer>Built for the Open Science Workshop with pynwb, NWB Inspector, h5wasm and Pyodide ·
   <a href="https://github.com/pwhelan123/nwb-file-creator" target="_blank" rel="noopener">Source</a> ·
   <a href="https://nwb.org" target="_blank" rel="noopener">About NWB</a></footer>
-<script type="module" src="app.js?v=2026-11-22b"></script>
+<script type="module" src="app.js?v=2026-11-22c"></script>
 </body>
 </html>
