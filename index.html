@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NWB File Creator</title>
+<meta name="description" content="Turn cleaned CSV data and a metadata spreadsheet into NWB files, entirely in your browser.">
+<style>
+:root {
+  --bg: #f7f7f5; --card: #ffffff; --ink: #1d232a; --muted: #5d6671; --line: #dfe2e6;
+  --accent: #1f5fa8; --accent-ink: #ffffff; --ok: #1d7a46; --warn: #9a6400; --bad: #b3261e;
+  --ok-bg: #e8f5ed; --warn-bg: #fdf3e1; --bad-bg: #fbeaea; --code: #f0f2f4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171b; --card: #1c2026; --ink: #e8eaed; --muted: #a0a8b2; --line: #2e343c;
+    --accent: #6ea8ff; --accent-ink: #0b1220; --ok: #6fd39a; --warn: #f0c060; --bad: #ff8a80;
+    --ok-bg: #16281e; --warn-bg: #2b2414; --bad-bg: #2e1818; --code: #242a31;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; margin: 0 0 4px; }
+.lede { color: var(--muted); margin: 0 0 28px; }
+section.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 20px 22px; margin-bottom: 18px; }
+h2 { font-size: 1.15rem; margin: 0 0 10px; display: flex; gap: 10px; align-items: center; }
+.num { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent); color: var(--accent-ink); font-size: .95rem; flex: none; }
+p { margin: 8px 0; }
+a { color: var(--accent); }
+code, pre { background: var(--code); border-radius: 6px; font: .88rem/1.45 ui-monospace, Menlo, Consolas, monospace; }
+code { padding: 1px 5px; }
+pre { padding: 12px 14px; overflow-x: auto; margin: 10px 0; }
+.btn { display: inline-block; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
+  border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; }
+.btn.secondary { background: transparent; color: var(--accent); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+#drop { border: 2px dashed var(--line); border-radius: 12px; padding: 26px 16px; text-align: center;
+  color: var(--muted); transition: border-color .15s, background .15s; }
+#drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+#drop strong { color: var(--ink); }
+#picked { margin-top: 10px; font-size: .92rem; color: var(--muted); }
+#status { font-size: .92rem; color: var(--muted); margin-top: 10px; min-height: 1.4em; }
+#status.ok { color: var(--ok); }
+.msg { border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
+.msg.ok { background: var(--ok-bg); color: var(--ok); }
+.msg.bad { background: var(--bad-bg); color: var(--bad); }
+.msg.warn { background: var(--warn-bg); color: var(--warn); }
+#report pre { white-space: pre-wrap; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tag { font-size: .75rem; font-weight: 700; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.tag.CRITICAL, .tag.PYNWB_VALIDATION, .tag.ERROR, .tag.TOOL { background: var(--bad-bg); color: var(--bad); }
+.tag.BEST_PRACTICE_VIOLATION { background: var(--warn-bg); color: var(--warn); }
+.tag.BEST_PRACTICE_SUGGESTION { background: var(--code); color: var(--muted); }
+.tablewrap { overflow-x: auto; }
+.privacy { font-size: .9rem; color: var(--muted); }
+footer { color: var(--muted); font-size: .85rem; margin-top: 28px; }
+@media (max-width: 560px) { h1 { font-size: 1.5rem; } section.card { padding: 16px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>NWB File Creator</h1>
+  <p class="lede">Turn cleaned spreadsheets into <a href="https://nwb.org" target="_blank" rel="noopener">Neurodata Without Borders</a>
+    files, ready for DANDI. Everything runs inside your browser: your data never leaves your computer.</p>
+
+  <section class="card">
+    <h2><span class="num">1</span>Get the template</h2>
+    <p>The template is a small, complete example dataset (two mice, one session each) plus a blank metadata workbook
+      and a README that explains every column.</p>
+    <div class="row">
+      <a class="btn" href="template/nwb_workshop_template.zip" download>Download template (.zip)</a>
+      <a class="btn secondary" href="template/metadata_blank.xlsx" download>Blank metadata workbook</a>
+      <a class="btn secondary" href="template/example_dataset/README.md" target="_blank">Read the README</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">2</span>Organize your data like this</h2>
+<pre>my_dataset/
+├── metadata.xlsx            sheets: Dataset, Subjects, Sessions, Devices
+└── sub-&lt;subject_id&gt;/
+    └── ses-&lt;session_id&gt;/
+        ├── trials.csv       optional: start_time, stop_time, any other columns
+        └── wheel.csv        time series: time_s, then columns like "speed [cm/s]"</pre>
+    <p>Every row in the Sessions sheet needs a matching folder. In each time series CSV, the first column is
+      <code>time_s</code> (seconds from session start) and each other header carries its unit in brackets.</p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">3</span>Create your NWB files</h2>
+    <div id="drop">
+      <p><strong>Drop your dataset folder or .zip here</strong></p>
+      <div class="row" style="justify-content:center">
+        <label class="btn secondary">Choose folder<input id="pickDir" type="file" webkitdirectory multiple hidden></label>
+        <label class="btn secondary">Choose .zip<input id="pickZip" type="file" accept=".zip" hidden></label>
+        <button class="btn secondary" id="useExample" type="button">Use the example data</button>
+      </div>
+      <div id="picked">Nothing selected yet.</div>
+    </div>
+    <div class="row">
+      <button class="btn" id="go" type="button" disabled>Create NWB files</button>
+    </div>
+    <div id="status">Starting Python…</div>
+    <div id="report"></div>
+    <p class="privacy">Privacy: files are read by Python running in this tab (Pyodide). Nothing is uploaded.
+      The first visit downloads about 30 MB of software, then it is cached.</p>
+  </section>
+
+  <section class="card">
+    <h2><span class="num">4</span>Look at the result</h2>
+    <p>Open your file in <a href="https://neurosift.app" target="_blank" rel="noopener">Neurosift</a> (drag it onto the page),
+      or in Python:</p>
+<pre>from pynwb import NWBHDF5IO
+with NWBHDF5IO("sub-AAX_1_ses-01.nwb") as io:
+    nwb = io.read()
+    print(nwb.subject, nwb.acquisition["wheel"], nwb.trials.to_dataframe())</pre>
+    <p>This tool covers behavior-style data (time series and trials). For raw electrophysiology, imaging or video, use
+      <a href="https://nwb-guide.readthedocs.io" target="_blank" rel="noopener">NWB GUIDE</a> or
+      <a href="https://neuroconv.readthedocs.io" target="_blank" rel="noopener">NeuroConv</a>.</p>
+  </section>
+  <footer>Built with pynwb, NWB Inspector and Pyodide. The converter is a single Python file,
+    <a href="convert.py">convert.py</a>, which also runs on your own computer:
+    <code>python convert.py my_dataset out_folder</code>.</footer>
+</main>
+
+<script>
+const PYODIDE_CDN = "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/";
+const params = new URLSearchParams(location.search);
+const pyodideBase = params.get("pyodide") || PYODIDE_CDN;
+const siteBase = new URL(".", location.href).href;
+
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status"), reportEl = $("report"), goBtn = $("go"), pickedEl = $("picked");
+let pyReady = false, busy = false;
+let selected = null; // {path: Uint8Array}
+
+const worker = new Worker("worker.js");
+worker.postMessage({ type: "init", pyodideBase: new URL(pyodideBase, location.href).href, siteBase });
+worker.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === "status") { statusEl.className = ""; statusEl.textContent = m.text; }
+  if (m.type === "ready") { pyReady = true; statusEl.className = "ok"; statusEl.textContent = m.text; refresh(); }
+  if (m.type === "error") { busy = false; refresh(); statusEl.className = ""; statusEl.textContent = "";
+    reportEl.innerHTML = `<div class="msg bad">Something went wrong: ${esc(m.text)}</div>`; }
+  if (m.type === "result") { busy = false; refresh(); showResult(m); }
+};
+
+function refresh() { goBtn.disabled = !(pyReady && selected && !busy); }
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function setFiles(list, label) {
+  selected = {};
+  for (const [path, file] of list) selected[path] = new Uint8Array(await file.arrayBuffer());
+  const n = Object.keys(selected).length;
+  pickedEl.textContent = `${label}: ${n} file${n === 1 ? "" : "s"} selected.`;
+  reportEl.innerHTML = "";
+  refresh();
+}
+
+$("pickDir").addEventListener("change", (e) =>
+  setFiles([...e.target.files].map((f) => [f.webkitRelativePath || f.name, f]), "Folder"));
+$("pickZip").addEventListener("change", (e) =>
+  setFiles([...e.target.files].map((f) => [f.name, f]), e.target.files[0]?.name || "Zip"));
+$("useExample").addEventListener("click", async () => {
+  const r = await fetch("template/nwb_workshop_template.zip");
+  await setFiles([["example.zip", await r.blob()]], "Example dataset");
+});
+
+const drop = $("drop");
+["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", async (e) => {
+  const entries = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  const out = [];
+  async function walk(entry, prefix) {
+    if (entry.isFile) {
+      const file = await new Promise((res, rej) => entry.file(res, rej));
+      out.push([prefix + entry.name, file]);
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do {
+        batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        for (const child of batch) await walk(child, prefix + entry.name + "/");
+      } while (batch.length);
+    }
+  }
+  if (entries.length) { for (const en of entries) await walk(en, ""); }
+  else { for (const f of e.dataTransfer.files) out.push([f.name, f]); }
+  setFiles(out, entries.length === 1 ? entries[0].name : "Dropped items");
+});
+
+goBtn.addEventListener("click", () => {
+  busy = true; refresh();
+  reportEl.innerHTML = "";
+  statusEl.className = ""; statusEl.textContent = "Converting…";
+  worker.postMessage({ type: "convert", files: selected });
+});
+
+function download(name, bytes) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function showResult(m) {
+  statusEl.textContent = "";
+  let html = "";
+  if (m.status === "layout") {
+    html += `<div class="msg bad"><strong>Please fix this and try again:</strong><ul style="margin:6px 0 0;padding-left:20px">${m.lines[0].split("\n").map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>`;
+  } else if (m.status === "crash") {
+    html += `<div class="msg bad"><strong>The converter hit an unexpected problem.</strong> Please show this to the instructor.</div>
+      <pre>${esc(m.lines.join("\n"))}</pre>`;
+  } else {
+    const nNwb = m.outputs.filter((o) => o.name.endsWith(".nwb")).length;
+    const failed = m.lines.some((l) => l.includes("FAILED"));
+    if (m.lines[0] && m.lines[0].startsWith("SKIPPED")) html += `<div class="msg warn">Some sessions were skipped. Fix the problems listed below and run again.</div>`;
+    html += failed
+      ? `<div class="msg bad">Files were written, but the NWB schema check found problems (see below).</div>`
+      : `<div class="msg ok"><strong>Done.</strong> ${nNwb} NWB file${nNwb === 1 ? "" : "s"} created and checked against the NWB schema.</div>`;
+    html += `<div class="row" id="dl"></div><pre>${esc(m.lines.join("\n"))}</pre>`;
+    const serious = m.inspect.filter((i) => i.importance !== "BEST_PRACTICE_SUGGESTION").length;
+    html += `<h3 style="margin:18px 0 6px;font-size:1rem">NWB Inspector (DANDI best practices)</h3>`;
+    if (!m.inspect.length) html += `<div class="msg ok">No issues found.</div>`;
+    else {
+      html += `<p class="privacy">${serious ? `${serious} item(s) to fix before uploading to DANDI.` : "Only suggestions, nothing blocking."}</p>
+      <div class="tablewrap"><table><tr><th>Level</th><th>File</th><th>Where</th><th>Message</th></tr>` +
+        m.inspect.map((i) => `<tr><td><span class="tag ${esc(i.importance)}">${esc(i.importance.replaceAll("_", " ").toLowerCase())}</span></td>
+          <td>${esc(i.file)}</td><td>${esc(i.where)}</td><td>${esc(i.message)}</td></tr>`).join("") + `</table></div>`;
+    }
+  }
+  reportEl.innerHTML = html;
+  const dl = $("dl");
+  if (dl) {
+    for (const o of m.outputs) {
+      const b = Object.assign(document.createElement("button"), { className: o.name.endsWith(".zip") ? "btn" : "btn secondary", textContent: "Download " + o.name });
+      b.type = "button";
+      b.onclick = () => download(o.name, o.bytes);
+      o.name.endsWith(".zip") ? dl.prepend(b) : dl.appendChild(b);
+    }
+  }
+}
+</script>
+</body>
+</html>
