@@ -398,7 +398,7 @@ def build_session(ses, subjects, devices, dataset, files, notes):
             raise LayoutError(f"{where}: device '{dname}' is not in the Devices sheet.")
         d = devices[dname]
         nwbfile.create_device(
-            name=safe_name(dname),
+            name=dname.replace("/", "-"),
             description=as_text(d.get("description", "")) or None,
             manufacturer=as_text(d.get("manufacturer", "")) or None,
         )
@@ -489,3 +489,32 @@ if __name__ == "__main__":
         print("\n".join(lines))
     except LayoutError as e:
         sys.exit(f"Problem with your files: {e}")
+
+
+def read_simple_sheet(data):
+    """Read 'Field' / 'Your value' pairs from the one-page workshop sheet (NWB_metadata_sheet.xlsx)."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    out = {}
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        hdr_idx = None
+        for i, r in enumerate(rows):
+            cells = [clean_header(c) for c in r]
+            if "field" in cells and "your_value" in cells:
+                hdr_idx, f_col, v_col = i, cells.index("field"), cells.index("your_value")
+                break
+        if hdr_idx is None:
+            continue
+        for r in rows[hdr_idx + 1:]:
+            if len(r) <= max(f_col, v_col) or r[f_col] in (None, "") or r[v_col] in (None, ""):
+                continue
+            v = r[v_col]
+            if isinstance(v, datetime):
+                v = v.date().isoformat() if v.time() == time(0) else v.isoformat()
+            elif isinstance(v, (date, time)):
+                v = v.isoformat()
+            out[clean_header(r[f_col])] = as_text(v)
+        if out:
+            break
+    return out

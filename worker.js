@@ -59,6 +59,20 @@ self.onmessage = async (e) => {
       await ready;
       return;
     }
+    if (msg.type === "read_sheet") {
+      await ready;
+      pyodide.globals.set("_sheet", pyodide.toPy(msg.bytes));
+      const out = await pyodide.runPythonAsync(`
+import json
+try:
+    _r = {"ok": True, "values": convert.read_simple_sheet(bytes(_sheet))}
+except Exception as e:
+    _r = {"ok": False, "error": str(e)}
+json.dumps(_r)
+`);
+      say("sheet", { id: msg.id, ...JSON.parse(out) });
+      return;
+    }
     if (msg.type === "convert") {
       await ready;
       say("status", { text: "Reading your files…" });
@@ -110,7 +124,7 @@ json.dumps({"status": status, "lines": lines, "paths": paths, "inspect": inspect
         const bytes = pyodide.FS.readFile(p);
         return { name: p.split("/").pop(), bytes };
       });
-      self.postMessage({ type: "result", ...res }, res.outputs.map((o) => o.bytes.buffer));
+      self.postMessage({ type: "result", id: msg.id, ...res }, res.outputs.map((o) => o.bytes.buffer));
     }
   } catch (err) {
     say("error", { text: String(err) });
