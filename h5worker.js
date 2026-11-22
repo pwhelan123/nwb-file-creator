@@ -169,11 +169,10 @@ function seriesInfo(path, g) {
   };
   const ts = get(`${path}/timestamps`);
   if (ts) {
+    // Reading timestamps costs downloads, so the time range is filled in later, only when needed (op "range").
     info.timestamps = true;
-    try {
-      info.t0 = n ? Number(sliceVals(ts, [[0, 1]])[0]) : 0;
-      info.t1 = n ? Number(sliceVals(ts, [[n - 1, n]])[0]) : 0;
-    } catch { info.t0 = 0; info.t1 = 0; }
+    info.t0 = null;
+    info.t1 = null;
   } else {
     const st = get(`${path}/starting_time`);
     info.start = st ? Number(plain(st.value)) : 0;
@@ -407,6 +406,23 @@ function closeCurrent() {
   blockCache.clear();
 }
 
+function ranges(paths) {
+  const out = {};
+  for (const p of paths) {
+    const s = window_series.get(p);
+    if (!s) continue;
+    if (s.t0 === null) {
+      try {
+        const ts = get(`${p}/timestamps`);
+        s.t0 = s.n ? Number(sliceVals(ts, [[0, 1]])[0]) : 0;
+        s.t1 = s.n ? Number(sliceVals(ts, [[s.n - 1, s.n]])[0]) : 0;
+      } catch { s.t0 = 0; s.t1 = 0; }
+    }
+    out[p] = [s.t0, s.t1];
+  }
+  return out;
+}
+
 async function open(msg) {
   const h5 = self.h5wasm;
   if (!FS) { FS = (await h5.ready).FS; try { FS.mkdir("/local"); } catch { /* exists */ } try { FS.mkdir("/remote"); } catch { /* exists */ } }
@@ -424,10 +440,15 @@ async function open(msg) {
     p = `/remote/url_${++fileNo}.nwb`;
     remote = { url: msg.url, size: msg.size, stats: createRemoteFile(p, msg.url, msg.size) };
   }
+  const t = [Date.now()];
   file = new h5.File(p, "r");
+  t.push(Date.now());
   const items = inventory();
+  t.push(Date.now());
   for (const it of items) if (it.kind === "series") window_series.set(it.path, it);
-  return { meta: meta(), items, net: remote ? { ...remote.stats } : null };
+  const m = meta();
+  t.push(Date.now());
+  return { meta: m, items, net: remote ? { ...remote.stats } : null, timing: { open: t[1] - t[0], inventory: t[2] - t[1], meta: t[3] - t[2] } };
 }
 
 self.onmessage = async (e) => {
@@ -439,6 +460,7 @@ self.onmessage = async (e) => {
     else if (op === "table") out = readTable(e.data);
     else if (op === "spikes") out = readSpikes(e.data);
     else if (op === "children") out = { children: children(e.data.path) };
+    else if (op === "range") out = { ranges: ranges(e.data.paths) };
     else throw new Error("unknown op " + op);
     if (remote) out.net = { ...remote.stats };
     post(id, true, { result: out });

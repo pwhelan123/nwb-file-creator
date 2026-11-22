@@ -1,7 +1,7 @@
 // NWB viewer UI. All file reading happens in h5worker.js; this module draws and navigates.
 // renderNwb(el, source, name): source is a Uint8Array, a File, or {url, size}.
 
-const VERSION = "2026-11-22e";
+const VERSION = "2026-11-22f";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const PALETTE = ["#2a6fdb", "#e8590c", "#2b9348", "#9c36b5", "#c92a2a", "#0b7285", "#5c940d", "#d6336c"];
 const BAND = ["rgba(42,111,219,.14)", "rgba(232,89,12,.14)", "rgba(43,147,72,.14)", "rgba(156,54,181,.14)", "rgba(201,42,42,.14)", "rgba(11,114,133,.14)"];
@@ -84,23 +84,34 @@ const row = (label, value) => (value === null || value === undefined || value ==
 const card = (icon, title, body) => `<section class="nv-card"><h3><span class="nv-ico">${icon}</span>${esc(title)}</h3><dl>${body || '<span class="nv-dim">Not recorded in this file.</span>'}</dl></section>`;
 
 // ------------------------------------------------------------------ main entry
+let openToken = 0;
 export async function renderNwb(el, source, filename = "file.nwb") {
   const src = source instanceof Uint8Array || ArrayBuffer.isView(source) ? { bytes: source } : source instanceof File ? { file: source } : source;
   const sizeBytes = src.bytes ? src.bytes.length : src.file ? src.file.size : src.size;
-  el.innerHTML = `<div class="nv-loading"><span class="spinner"></span>Opening ${esc(filename)}${src.url ? ` (${fmtBytes(sizeBytes)}, reading only what's needed)` : ""}…</div>`;
+  const token = ++openToken;
+  const base = `Opening ${esc(filename)}${src.url ? ` (${fmtBytes(sizeBytes)}; only the parts needed are downloaded)` : ""}`;
+  el.innerHTML = `<div class="nv-loading"><span class="spinner"></span>${base}…<div class="nv-dim" data-r="openprog" style="font-size:.88rem;margin-top:4px"></div></div>`;
+  const started = Date.now();
+  onProgress = (net) => {
+    const p = el.querySelector('[data-r="openprog"]');
+    if (p && token === openToken) p.textContent = `Reading the file's table of contents: ${fmtBytes(net.bytes)} downloaded in ${Math.round((Date.now() - started) / 1000)} s…`;
+  };
   let info;
   try {
     resetWorker();
     const payload = src.bytes ? { bytes: src.bytes.slice().buffer } : src.file ? { file: src.file } : { url: src.url, size: src.size };
     info = await call("open", payload);
   } catch (e) {
+    if (token !== openToken) return; // a newer file was opened meanwhile
     el.innerHTML = `<div class="nv-err">Couldn't open this as an NWB file: ${esc(e.message)}</div>`;
     return;
   }
+  if (token !== openToken) return;
   const v = new View(el, info, filename, sizeBytes, !!src.url);
   v.payload = src.bytes ? { bytes: src.bytes } : src.file ? { file: src.file } : { url: src.url, size: src.size };
   onProgress = (net) => v.showNet(net);
   v.render();
+  if (info.net) v.showNet(info.net);
   return v;
 }
 
@@ -119,12 +130,8 @@ class View {
     const small = this.series.filter((s) => (s.shape[1] || 1) <= 8 && s.n <= 5e7).sort((a, b) => pref(a) - pref(b) || /smooth/i.test(a.name) - /smooth/i.test(b.name));
     this.selected = (small.length ? small : this.series).slice(0, 3).map((s) => s.path);
     if (this.units && this.selected.length < 3) this.selected.push("__raster__");
-    const ts = this.series.flatMap((s) => [s.t0, s.t1]).filter(isFinite);
-    this.T0 = ts.length ? Math.min(...ts) : 0;
-    this.T1 = ts.length ? Math.max(...ts) : 1;
-    if (this.T1 <= this.T0) this.T1 = this.T0 + 1;
-    const span = this.T1 - this.T0;
-    this.win = [this.T0, this.T0 + Math.min(span, isRemote ? 30 : span > 600 ? 60 : span)];
+    this.computeRange();
+    this.win = [this.T0, this.T1];
     this.trialIdx = -1;
     this.loadToken = 0;
   }
@@ -142,14 +149,14 @@ class View {
       <div class="nv-stats">
         <div class="nv-stat"><b>${this.series.length}</b><span>time series</span></div>
         <div class="nv-stat"><b>${samples > 1e9 ? (samples / 1e9).toFixed(1) + " bn" : samples > 1e6 ? (samples / 1e6).toFixed(1) + " M" : samples.toLocaleString()}</b><span>data points</span></div>
-        <div class="nv-stat"><b>${fmtDur(this.T1 - this.T0)}</b><span>of recording</span></div>
+        <div class="nv-stat"><b data-r="dur">${fmtDur(this.T1 - this.T0)}</b><span>of recording</span></div>
         <div class="nv-stat"><b>${this.tables.length}</b><span>table${this.tables.length === 1 ? "" : "s"}${this.trialsInfo ? ` · ${this.trialsInfo.n} ${esc(this.trialsInfo.name)}` : ""}</span></div>
       </div>
       <h2 class="nv-h">The file describes itself</h2>
       <p class="nv-dim nv-lead">Everything below was read from inside the file. Anyone who opens it, in any language, sees the same answers.</p>
       <div class="nv-cards">
         ${card("🐭", "Who", row("Subject", esc(sub.subject_id)) + row("Species", species) + row("Sex", esc(SEX[sub.sex] || sub.sex)) + row("Age", esc(prettyAge(sub.age))) + row("Strain", esc(sub.strain)) + row("Genotype", esc(sub.genotype)) + row("Weight", esc(sub.weight)))}
-        ${card("🕑", "When", row("Started", prettyTime(meta.session_start_time)) + row("Session", esc(meta.session_id)) + row("Length", esc(fmtDur(this.T1 - this.T0))))}
+        ${card("🕑", "When", row("Started", prettyTime(meta.session_start_time)) + row("Session", esc(meta.session_id)) + row("Length", `<span data-r="dur">${esc(fmtDur(this.T1 - this.T0))}</span>`))}
         ${card("🔬", "What and how", row("Session", esc(meta.session_description)) + row("Experiment", esc(meta.experiment_description)) + row("Equipment", devices) + row("Protocol", esc(meta.protocol)))}
         ${card("👩‍🔬", "By whom", row("Experimenter", esc(meta.experimenter)) + row("Lab", esc(meta.lab)) + row("Institution", esc(meta.institution)) + row("Keywords", esc(meta.keywords)))}
       </div>
@@ -206,7 +213,7 @@ with NWBHDF5IO("${esc(this.filename)}") as io:
       return `<label class="ex-item" title="${esc(s.path)}${s.description ? "\n" + esc(s.description) : ""}">
         <input type="checkbox" data-series="${esc(s.path)}" ${this.selected.includes(s.path) ? "checked" : ""}>
         <span><b>${esc(s.name)}</b> <span class="nv-badge">${esc(s.type)}</span><br>
-        <span class="nv-dim">${s.n.toLocaleString()}${cols > 1 ? ` × ${cols}` : ""} · ${esc(s.unit || "no unit")} · ${fmtDur(s.t1 - s.t0)}${s.path.split("/").length > 2 ? ` · ${esc(s.path.split("/").slice(0, -1).join("/"))}` : ""}</span></span></label>`;
+        <span class="nv-dim">${s.n.toLocaleString()}${cols > 1 ? ` × ${cols}` : ""} · ${esc(s.unit || "no unit")} ${s.t0 !== null ? ` · ${fmtDur(s.t1 - s.t0)}` : ""}${s.path.split("/").length > 2 ? ` · ${esc(s.path.split("/").slice(0, -1).join("/"))}` : ""}</span></span></label>`;
     }).join("");
     const raster = this.units ? `<label class="ex-item"><input type="checkbox" data-series="__raster__" ${this.selected.includes("__raster__") ? "checked" : ""}>
         <span><b>Spike raster</b> <span class="nv-badge">Units</span><br><span class="nv-dim">${this.units.n.toLocaleString()} units, first 60 shown</span></span></label>` : "";
@@ -241,6 +248,11 @@ with NWBHDF5IO("${esc(this.filename)}") as io:
         this.selected.push(p);
         this.lastAdded = p;
       } else this.selected = this.selected.filter((x) => x !== p);
+      if (cb.checked && p !== "__raster__") {
+        this.note(`<span class="spinner"></span>Finding the time range…`);
+        this.ensureRanges([p]).catch(() => {}).then(() => this.load());
+        return;
+      }
       this.load();
     });
     list.addEventListener("click", (e) => {
@@ -260,15 +272,44 @@ with NWBHDF5IO("${esc(this.filename)}") as io:
     this.r("tree").addEventListener("toggle", (e) => { const d = e.target; if (d.open && d.dataset.path && !d.dataset.loaded) this.loadTree(d); }, true);
   }
 
+  computeRange() {
+    const ts = this.series.flatMap((s) => [s.t0, s.t1]).filter((v) => v !== null && v !== undefined && isFinite(v));
+    if (this.trials && this.trials.shown) {
+      ts.push(Math.min(...this.trials.columns.start_time.map(Number)), Math.max(...this.trials.columns.stop_time.map(Number)));
+    }
+    this.T0 = ts.length ? Math.min(...ts) : 0;
+    this.T1 = ts.length ? Math.max(...ts) : 1;
+    if (this.T1 <= this.T0) this.T1 = this.T0 + 1;
+    for (const el of this.el.querySelectorAll('[data-r="dur"]')) el.textContent = fmtDur(this.T1 - this.T0);
+  }
+
+  // time ranges of series with timestamps are read only when they are needed
+  async ensureRanges(paths) {
+    const need = paths.filter((p) => { const s = this.series.find((x) => x.path === p); return s && s.t0 === null; });
+    if (!need.length) return;
+    const { ranges } = await call("range", { paths: need });
+    for (const [p, [a, z]] of Object.entries(ranges)) {
+      const s = this.series.find((x) => x.path === p);
+      if (s) { s.t0 = a; s.t1 = z; }
+    }
+    this.computeRange();
+    const list = this.r("list");
+    if (list) list.innerHTML = this.listHtml(this.r("filter")?.value || "");
+  }
+
   async init() {
+    this.note(`<span class="spinner"></span>Finding the time range…`);
+    try { await this.ensureRanges(this.selected); } catch { /* fall back to what we know */ }
     if (this.trialsInfo) {
       try {
-        const t = await call("table", { path: this.trialsInfo.path, maxRows: 5000 });
-        this.trials = t;
+        this.trials = await call("table", { path: this.trialsInfo.path, maxRows: 5000 });
         this.updateTrialLabel();
-        this.drawTicks();
       } catch { /* trials are optional */ }
     }
+    this.computeRange();
+    this.drawTicks();
+    const span = this.T1 - this.T0;
+    this.win = [this.T0, this.T0 + Math.min(span, this.isRemote ? 30 : span > 600 ? 60 : span)];
     this.load();
   }
 
