@@ -10,6 +10,7 @@ let file = null;
 let mounted = false;
 let remote = null; // {url, size, requests, bytes}
 let fileNo = 0;
+let lastProgress = 0;
 
 const post = (id, ok, data) => self.postMessage({ id, ok, ...data });
 
@@ -33,6 +34,8 @@ function makeRemote(url, size) {
     }
     c = new Uint8Array(xhr.response);
     stats.requests++; stats.bytes += c.length;
+    const now = Date.now();
+    if (now - lastProgress > 400) { lastProgress = now; self.postMessage({ progress: true, net: { ...stats } }); }
     cache.set(n, c);
     if (cache.size > MAX_CACHE_CHUNKS) cache.delete(cache.keys().next().value);
     return c;
@@ -108,6 +111,24 @@ function val(p) {
 }
 function sliceVals(d, ranges) {
   return plain(d.slice(ranges));
+}
+
+// Element access to big 1-D datasets (timestamps, spike times) in cached blocks, so binary searches
+// decompress and download each block once instead of once per probe.
+const BLOCK = 65536;
+const blockCache = new Map(); // `${path}#${n}` -> Float64Array
+function element(path, i) {
+  const n = Math.floor(i / BLOCK);
+  const key = `${path}#${n}`;
+  let b = blockCache.get(key);
+  if (!b) {
+    const d = get(path);
+    const len = d.shape[0];
+    b = Float64Array.from(sliceVals(d, [[n * BLOCK, Math.min(len, (n + 1) * BLOCK)]]), Number);
+    blockCache.set(key, b);
+    if (blockCache.size > 300) blockCache.delete(blockCache.keys().next().value);
+  } else { blockCache.delete(key); blockCache.set(key, b); }
+  return b[i - n * BLOCK];
 }
 
 // ------------------------------------------------------------------ model
@@ -233,11 +254,11 @@ function children(path) {
 
 function indexAtTime(s, t) {
   if (!s.timestamps) return Math.min(s.n, Math.max(0, Math.round((t - s.start) * s.rate)));
-  const ts = get(`${s.path}/timestamps`);
+  const tp = `${s.path}/timestamps`;
   let lo = 0, hi = s.n;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    const v = Number(sliceVals(ts, [[mid, mid + 1]])[0]);
+    const v = element(tp, mid);
     if (v < t) lo = mid + 1; else hi = mid;
   }
   return lo;
@@ -357,7 +378,8 @@ function readSpikes({ path = "units", t0, t1, maxUnits = 60, maxSpikes = 30000 }
     spikeCache.set(path, c);
   }
   const { idx, times, st } = c;
-  const at = (i) => (times ? times[i] : Number(sliceVals(st, [[i, i + 1]])[0]));
+  const stPath = `${path}/spike_times`;
+  const at = (i) => (times ? times[i] : element(stPath, i));
   const units = Math.min(idx.length, maxUnits);
   const xs = [], ys = [];
   for (let u = 0; u < units && xs.length < maxSpikes; u++) {
@@ -366,7 +388,7 @@ function readSpikes({ path = "units", t0, t1, maxUnits = 60, maxSpikes = 30000 }
     const find = (t) => { let lo = a, hi = z; while (lo < hi) { const m = (lo + hi) >> 1; if (at(m) < t) lo = m + 1; else hi = m; } return lo; };
     const s0 = find(t0), s1 = Math.min(find(t1), s0 + (maxSpikes - xs.length));
     if (s1 <= s0) continue;
-    const vals = times ? times.subarray(s0, s1) : sliceVals(st, [[s0, s1]]);
+    const vals = times ? times.subarray(s0, s1) : Array.from({ length: s1 - s0 }, (_, k) => element(stPath, s0 + k));
     for (const v of vals) { xs.push(Number(v)); ys.push(u); }
   }
   return { x: xs, y: ys, units, totalUnits: idx.length, truncated: xs.length >= maxSpikes };
@@ -382,6 +404,7 @@ function closeCurrent() {
   if (mounted) { try { FS.unmount("/local"); } catch { /* ignore */ } mounted = false; }
   window_series.clear();
   spikeCache.clear();
+  blockCache.clear();
 }
 
 async function open(msg) {

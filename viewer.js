@@ -1,19 +1,26 @@
 // NWB viewer UI. All file reading happens in h5worker.js; this module draws and navigates.
 // renderNwb(el, source, name): source is a Uint8Array, a File, or {url, size}.
 
-const VERSION = "2026-11-22c";
+const VERSION = "2026-11-22d";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const PALETTE = ["#2a6fdb", "#e8590c", "#2b9348", "#9c36b5", "#c92a2a", "#0b7285", "#5c940d", "#d6336c"];
 const BAND = ["rgba(42,111,219,.14)", "rgba(232,89,12,.14)", "rgba(43,147,72,.14)", "rgba(156,54,181,.14)", "rgba(201,42,42,.14)", "rgba(11,114,133,.14)"];
 const MAX_SELECTED = 6;
 
 // ------------------------------------------------------------------ worker plumbing
-let worker = null, seq = 0;
+let worker = null, seq = 0, onProgress = null;
+function resetWorker() {
+  if (worker) worker.terminate();
+  worker = null;
+  for (const w of waiting.values()) w.reject(new Error("stopped"));
+  waiting.clear();
+}
 const waiting = new Map();
 function call(op, payload = {}) {
   if (!worker) {
     worker = new Worker(`h5worker.js?v=${VERSION}`);
     worker.onmessage = (e) => {
+      if (e.data.progress) { onProgress?.(e.data.net); return; }
       const w = waiting.get(e.data.id);
       if (!w) return;
       waiting.delete(e.data.id);
@@ -82,6 +89,7 @@ export async function renderNwb(el, source, filename = "file.nwb") {
   el.innerHTML = `<div class="nv-loading"><span class="spinner"></span>Opening ${esc(filename)}${src.url ? ` (${fmtBytes(sizeBytes)}, reading only what's needed)` : ""}…</div>`;
   let info;
   try {
+    resetWorker();
     const payload = src.bytes ? { bytes: src.bytes.slice().buffer } : src.file ? { file: src.file } : { url: src.url, size: src.size };
     info = await call("open", payload);
   } catch (e) {
@@ -89,6 +97,8 @@ export async function renderNwb(el, source, filename = "file.nwb") {
     return;
   }
   const v = new View(el, info, filename, sizeBytes, !!src.url);
+  v.payload = src.bytes ? { bytes: src.bytes } : src.file ? { file: src.file } : { url: src.url, size: src.size };
+  onProgress = (net) => v.showNet(net);
   v.render();
   return v;
 }
@@ -104,7 +114,8 @@ class View {
     this.trials = null;
     this.selected = [];
     // prefer small, behaviour-like series first; skip huge multichannel arrays by default
-    const small = this.series.filter((s) => (s.shape[1] || 1) <= 8 && s.n <= 5e7);
+    const pref = (s) => (/wheel|pupil|lick|speed|velocity|running|position/i.test(s.name) ? 0 : 1);
+    const small = this.series.filter((s) => (s.shape[1] || 1) <= 8 && s.n <= 5e7).sort((a, b) => pref(a) - pref(b) || /smooth/i.test(a.name) - /smooth/i.test(b.name));
     this.selected = (small.length ? small : this.series).slice(0, 3).map((s) => s.path);
     if (this.units && this.selected.length < 3) this.selected.push("__raster__");
     const ts = this.series.flatMap((s) => [s.t0, s.t1]).filter(isFinite);
@@ -227,6 +238,7 @@ with NWBHDF5IO("${esc(this.filename)}") as io:
       if (cb.checked) {
         if (this.selected.length >= MAX_SELECTED) { cb.checked = false; this.note(`Up to ${MAX_SELECTED} at once. Untick one first.`); return; }
         this.selected.push(p);
+        this.lastAdded = p;
       } else this.selected = this.selected.filter((x) => x !== p);
       this.load();
     });
@@ -317,7 +329,8 @@ with NWBHDF5IO("${esc(this.filename)}") as io:
     const paths = this.selected.filter((p) => p === "__raster__" || this.series.some((s) => s.path === p));
     if (!paths.length) { window.Plotly?.purge(plotEl); plotEl.innerHTML = `<p class="nv-dim" style="padding:16px">Tick something in the list to plot it.</p>`; this.note(""); return; }
     plotEl.classList.add("busy");
-    this.note(`<span class="spinner"></span>Loading ${fmtDur(z - a)} of data…`);
+    this.note(`<span class="spinner"></span>Loading ${fmtDur(z - a)} of data… <button class="ex-btn" data-stop type="button">Stop</button>`);
+    this.r("note").querySelector("[data-stop]").onclick = () => this.stop();
     const maxPoints = Math.max(600, Math.min(3000, Math.round(plotEl.clientWidth * 2)));
     const results = [];
     let sampled = false;
@@ -339,16 +352,38 @@ with NWBHDF5IO("${esc(this.filename)}") as io:
         if (token !== this.loadToken) return; // the window moved while we were loading
       }
     } catch (e) {
+      if (e.message === "stopped" || token !== this.loadToken) return;
       plotEl.classList.remove("busy");
       this.note(`<span style="color:var(--bad)">Couldn't read the data: ${esc(e.message)}</span>`);
       return;
     }
     if (token !== this.loadToken) return;
     plotEl.classList.remove("busy");
+    this.goodWin = [...this.win];
+    this.lastAdded = null;
     this.draw(results);
     const exact = results.every((x) => x.raster || x.r.exact);
     this.note(sampled ? "Zoomed out a long way: showing the highs and lows of short samples spread across this window. Zoom in to see every sample."
       : exact ? "Showing every sample in this window." : "Showing the highs and lows of every sample in this window (zoom in for individual samples).");
+  }
+
+  // Abandon a slow load: restart the reader, drop the item added last, and go back to the last window that worked.
+  async stop() {
+    this.loadToken++;
+    resetWorker();
+    this.note(`<span class="spinner"></span>Stopping…`);
+    const payload = this.payload.bytes ? { bytes: this.payload.bytes.slice().buffer } : this.payload;
+    try { await call("open", payload); } catch (e) { this.note(`<span style="color:var(--bad)">${esc(e.message)}</span>`); return; }
+    if (this.lastAdded && this.selected.includes(this.lastAdded)) {
+      this.selected = this.selected.filter((p) => p !== this.lastAdded);
+      const cb = this.el.querySelector(`[data-series="${CSS.escape(this.lastAdded)}"]`);
+      if (cb) cb.checked = false;
+    }
+    this.lastAdded = null;
+    if (this.goodWin) this.win = [...this.goodWin];
+    this.r("plot").classList.remove("busy");
+    await this.load();
+    this.note(this.r("note").innerHTML + " (stopped the slow request)");
   }
 
   showNet(net) {
