@@ -28,6 +28,20 @@ STATUS_FILL = {
     FORMAT: PatternFill("solid", fgColor="E3F0FF"),
 }
 
+SPECIES = ["Mouse", "Rat", "Human", "Rhesus macaque", "Marmoset", "Zebrafish", "Fruit fly", "Zebra finch",
+           "Ferret", "Cat", "Pig", "Prairie vole", "Roundworm (C. elegans)", "Frog (Xenopus)"]
+# Labels people recognise; the wizard turns each into its IANA name (keep in sync with TZ_LIST in app.js).
+TIMEZONES = ["US Pacific (Los Angeles)", "US Mountain (Denver)", "US Arizona (Phoenix)", "US Central (Chicago)",
+             "US Eastern (New York)", "US Alaska (Anchorage)", "US Hawaii (Honolulu)",
+             "Canada Pacific (British Columbia)", "Canada Mountain (Alberta)", "Canada Saskatchewan (Regina)",
+             "Canada Central (Manitoba)", "Canada Eastern (Ontario, Quebec)", "Canada Atlantic (Nova Scotia)",
+             "Canada Newfoundland (St. John's)", "Mexico (Mexico City)", "Brazil (Sao Paulo)",
+             "UK and Ireland (London)", "Central Europe (Paris, Berlin, Madrid)", "Eastern Europe (Athens, Helsinki)",
+             "Israel (Jerusalem)", "South Africa (Johannesburg)", "India (Kolkata)", "China (Shanghai)",
+             "Singapore", "Korea (Seoul)", "Japan (Tokyo)", "Australia East (Sydney)", "Australia West (Perth)",
+             "New Zealand (Auckland)", "UTC"]
+SEXES = ["Male", "Female", "Unknown"]
+
 # (field, example, what it means, status, dropdown or None)
 ROWS = [
     ("About the experiment", None, None, None, None),
@@ -38,20 +52,18 @@ ROWS = [
      "One or two sentences about the whole experiment.", NEW, None),
     ("The animal", None, None, None, None),
     ("subject_id", "AAX-1", "The animal's ID. Use letters, numbers and dashes.", HAVE, None),
-    ("species", "Mouse", "Pick from the list. The file stores the Latin name (Mus musculus).", FORMAT,
-     ["Mouse", "Rat", "Human", "Rhesus macaque", "Zebrafish", "Fruit fly", "Marmoset"]),
-    ("sex", "Male", "Male, Female or Unknown. The file stores M, F or U.", FORMAT, ["Male", "Female", "Unknown"]),
+    ("species", "Mouse", "Pick from the list. The file stores the Latin name (Mus musculus). "
+     "Not listed? Type the Latin name into the website instead.", FORMAT, SPECIES),
+    ("sex", "Male", "Male, Female or Unknown. The file stores M, F or U.", FORMAT, SEXES),
     ("age_days", "90", "Age in days on the day of the session. The file stores P90D.", FORMAT, None),
     ("strain", "C57BL/6J", "Strain or line.", HAVE, None),
     ("weight_g", "25", "Weight in grams.", HAVE, None),
     ("The session", None, None, None, None),
     ("session_id", "day1", "A short name for this session.", HAVE, None),
-    ("session_date", "2026-05-29", "Date as YYYY-MM-DD.", FORMAT, None),
-    ("start_time", "13:45", "Clock time the recording started (24 h).", HAVE, None),
-    ("timezone", "America/Denver",
-     "Where the data was recorded. Without it, a start time is ambiguous.", NEW,
-     ["America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York", "Europe/London",
-      "Europe/Berlin", "Asia/Tokyo", "Australia/Sydney", "UTC"]),
+    ("session_date", "2026-05-29", "Date of the session, e.g. 2026-05-29.", FORMAT, "date"),
+    ("start_time", "9:43", "Clock time the recording started, e.g. 9:43 or 13:45 (24 h).", HAVE, "time"),
+    ("timezone", "US Mountain (Denver)",
+     "Pick where the data was recorded from the list. Without it, a start time is ambiguous.", NEW, TIMEZONES),
     ("session_description", "Cue task, day 1. Wheel speed and pupil recorded.",
      "One sentence: what happened in this session.", NEW, None),
     ("protocol", "AA35009", "Animal protocol (IACUC) number.", HAVE, None),
@@ -63,6 +75,18 @@ ROWS = [
 
 THIN = Side(style="thin", color="D0D4DA")
 BOX = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+
+
+def lists_col(wb, field, choices):
+    """Put a drop-down list on the hidden 'Lists' sheet (inline lists are capped at 255 characters)."""
+    if "Lists" not in wb.sheetnames:
+        wb.create_sheet("Lists").sheet_state = "hidden"
+    ls = wb["Lists"]
+    j = (ls.max_column + 1) if ls.max_row > 1 or ls.cell(1, 1).value else 1
+    ls.cell(1, j, field)
+    for i, c in enumerate(choices, start=2):
+        ls.cell(i, j, c)
+    return ls.cell(1, j).column_letter
 
 
 def sheet_fill(wb):
@@ -103,7 +127,7 @@ def sheet_fill(wb):
         ws.cell(r, 1, field).font = Font(name="Menlo", bold=True)
         val = ws.cell(r, 2)
         val.fill = PatternFill("solid", fgColor="FFFFFF")
-        val.number_format = "@"
+        val.number_format = "@"  # keeps IDs like 001 as typed
         ws.cell(r, 3, example).font = Font(color="6B7280", italic=True)
         ws.cell(r, 4, meaning).alignment = Alignment(wrap_text=True, vertical="top")
         s = ws.cell(r, 5, STATUS_TEXT[status])
@@ -113,9 +137,25 @@ def sheet_fill(wb):
                 ws.cell(r, j).fill = STATUS_FILL[status]
             ws.cell(r, j).alignment = Alignment(wrap_text=True, vertical="top")
         s.font = Font(bold=(status == NEW))
-        if choices:
-            dv = DataValidation(type="list", formula1='"' + ",".join(choices) + '"', allow_blank=True,
-                                showErrorMessage=False)
+        if choices == "time":
+            val.number_format = "h:mm"
+            dv = DataValidation(type="time", operator="between", formula1="0", formula2="0.999988426",
+                                allow_blank=True, showErrorMessage=True, errorStyle="stop",
+                                errorTitle="Not a time", error="Type a clock time like 9:43 or 13:45.")
+            dv.add(val.coordinate)
+            ws.add_data_validation(dv)
+        elif choices == "date":
+            val.number_format = "yyyy-mm-dd"
+            dv = DataValidation(type="date", operator="greaterThan", formula1="1", allow_blank=True,
+                                showErrorMessage=True, errorStyle="stop",
+                                errorTitle="Not a date", error="Type a date like 2026-05-29.")
+            dv.add(val.coordinate)
+            ws.add_data_validation(dv)
+        elif choices:
+            col = lists_col(wb, field, choices)
+            dv = DataValidation(type="list", formula1=f"Lists!${col}$2:${col}${len(choices) + 1}", allow_blank=True,
+                                showErrorMessage=True, errorStyle="stop", errorTitle="Pick from the list",
+                                error=f"Please choose a {field.replace('_', ' ')} from the drop-down list.")
             dv.add(val.coordinate)
             ws.add_data_validation(dv)
         ws.row_dimensions[r].height = 32
@@ -177,5 +217,6 @@ if __name__ == "__main__":
     wb = Workbook()
     sheet_fill(wb)
     sheet_data(wb)
+    wb.move_sheet("Lists", offset=len(wb.sheetnames) - 1 - wb.sheetnames.index("Lists"))
     wb.save(OUT)
     print("wrote", OUT)

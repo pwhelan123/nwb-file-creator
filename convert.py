@@ -33,10 +33,15 @@ SHEETS = ["Dataset", "Subjects", "Sessions", "Devices"]
 SPECIES = {
     "mouse": "Mus musculus", "mice": "Mus musculus",
     "rat": "Rattus norvegicus", "human": "Homo sapiens",
-    "rhesus macaque": "Macaca mulatta", "macaque": "Macaca mulatta",
-    "zebrafish": "Danio rerio", "fruit fly": "Drosophila melanogaster",
-    "marmoset": "Callithrix jacchus", "ferret": "Mustela putorius furo",
+    "rhesus macaque": "Macaca mulatta", "macaque": "Macaca mulatta", "monkey": "Macaca mulatta",
+    "marmoset": "Callithrix jacchus", "zebrafish": "Danio rerio", "fruit fly": "Drosophila melanogaster",
+    "zebra finch": "Taeniopygia guttata", "ferret": "Mustela putorius furo", "cat": "Felis catus",
+    "pig": "Sus scrofa", "prairie vole": "Microtus ochrogaster",
+    "roundworm (c. elegans)": "Caenorhabditis elegans", "c. elegans": "Caenorhabditis elegans",
+    "frog (xenopus)": "Xenopus laevis", "xenopus": "Xenopus laevis",
 }
+# Values that mean "no value here" in a data column.
+MISSING = {"", "nan", "na", "n/a", "none", "null", "-"}
 SEX = {"m": "M", "male": "M", "f": "F", "female": "F", "u": "U", "unknown": "U", "o": "O", "other": "O"}
 
 DATASET_FIELDS = {
@@ -216,8 +221,11 @@ def parse_clock(v, where):
     if isinstance(v, (int, float)) and 0 <= v < 1:  # Excel fraction of a day
         secs = round(v * 86400)
         return time(secs // 3600, secs % 3600 // 60, secs % 60)
-    s = as_text(v).upper()
-    for fmt in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M:%S %p"):
+    s = as_text(v).upper().replace(".", ":").replace("AM", " AM").replace("PM", " PM")
+    s = re.sub(r"\s+", " ", s).strip()
+    if re.fullmatch(r"\d{3,4}", s):
+        s = s[:-2] + ":" + s[-2:]
+    for fmt in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M:%S %p", "%I %p"):
         try:
             return datetime.strptime(s, fmt).time()
         except ValueError:
@@ -239,26 +247,43 @@ def split_unit(col):
     return (m.group(1).strip(), m.group(2)) if m else (col.strip(), None)
 
 
-def parse_numeric(name, header, rows):
-    out = np.empty((len(rows), len(header)))
-    for i, r in enumerate(rows, start=2):
-        if len(r) != len(header):
-            raise LayoutError(f"{name} row {i}: expected {len(header)} values, found {len(r)}.")
-        for j, c in enumerate(r):
-            try:
-                out[i - 2, j] = float(c) if c != "" else np.nan
-            except ValueError:
-                raise LayoutError(f"{name} row {i}, column '{header[j]}': '{c}' is not a number.")
-    return out
+def is_number(c):
+    if c.strip().lower() in MISSING:
+        return True
+    try:
+        float(c)
+        return True
+    except ValueError:
+        return False
+
+
+def to_float(c):
+    return np.nan if c.strip().lower() in MISSING else float(c)
 
 
 def safe_name(stem):
     return "".join(c if c.isalnum() or c in "_-" else "_" for c in stem) or "timeseries"
 
 
-def add_timeseries(nwbfile, path, data_bytes, notes):
+def read_column_notes(files, folder):
+    """Optional columns.csv in a session folder: file, column, description."""
+    path = folder + "columns.csv"
+    if path not in files:
+        return {}
+    header, rows = read_csv_rows(path, files[path])
+    low = [h.lower() for h in header]
+    if not {"file", "column", "description"} <= set(low):
+        raise LayoutError(f"{path}: needs the columns file, column and description.")
+    fi, ci, di = low.index("file"), low.index("column"), low.index("description")
+    return {(r[fi].lower(), r[ci].lower()): r[di] for r in rows if len(r) > max(fi, ci, di) and r[di]}
+
+
+def add_timeseries(nwbfile, path, data_bytes, notes, col_notes=None):
+    """Numeric columns become one TimeSeries; text columns become an events table."""
     from pynwb import TimeSeries
 
+    col_notes = col_notes or {}
+    fname = PurePosixPath(path).name
     header, rows = read_csv_rows(path, data_bytes)
     if header[0].lower() != TIME_COLUMN:
         raise LayoutError(f"{path}: the first column must be '{TIME_COLUMN}' (seconds from session start).")
@@ -266,41 +291,96 @@ def add_timeseries(nwbfile, path, data_bytes, notes):
         raise LayoutError(f"{path}: needs at least one data column after '{TIME_COLUMN}'.")
     if not rows:
         raise LayoutError(f"{path}: has a header but no data rows.")
-    names, units = zip(*(split_unit(h) for h in header[1:]))
-    if len(set(units)) > 1:
-        raise LayoutError(
-            f"{path}: all columns in one file must share a unit, found {sorted(set(map(str, units)))}. "
-            "Put columns with different units in separate files."
-        )
-    unit = units[0]
-    if unit is None:
-        notes.append(f"{path}: no unit in the column headers (e.g. 'speed [cm/s]'), stored as 'unknown'.")
-        unit = "unknown"
-    arr = parse_numeric(path, header, rows)
-    t, data = arr[:, 0], arr[:, 1:]
-    if np.isnan(t).any():
-        raise LayoutError(f"{path}: every row needs a {TIME_COLUMN} value.")
+    for i, r in enumerate(rows, start=2):
+        if len(r) != len(header):
+            raise LayoutError(f"{path} row {i}: expected {len(header)} values, found {len(r)}.")
+    try:
+        t = np.array([float(r[0]) for r in rows])
+    except ValueError:
+        raise LayoutError(f"{path}: every row needs a number in {TIME_COLUMN}.")
     if np.any(np.diff(t) <= 0):
         raise LayoutError(f"{path}: {TIME_COLUMN} must increase on every row (check sorting and duplicates).")
+
+    num_cols = [j for j in range(1, len(header)) if all(is_number(r[j]) for r in rows)]
+    txt_cols = [j for j in range(1, len(header)) if j not in num_cols]
+
+    def describe(j):
+        nm = split_unit(header[j])[0]
+        d = col_notes.get((fname.lower(), nm.lower()))
+        return f"{nm} ({d})" if d else nm
+
     name = safe_name(PurePosixPath(path).stem)
-    kwargs = dict(
+    added = []
+    if num_cols:
+        names, units = zip(*(split_unit(header[j]) for j in num_cols))
+        if len(set(units)) > 1:
+            raise LayoutError(
+                f"{path}: all number columns in one file must share a unit, found {sorted(set(map(str, units)))}. "
+                "Put columns with different units in separate files."
+            )
+        unit = units[0]
+        if unit is None:
+            notes.append(f"{path}: no unit in the column headers (e.g. 'speed [cm/s]'), stored as 'unknown'.")
+            unit = "unknown"
+        data = np.array([[to_float(r[j]) for j in num_cols] for r in rows])
+        kwargs = dict(
+            name=name,
+            data=data[:, 0] if data.shape[1] == 1 else data,
+            unit=unit,
+            description=f"From {fname}. Columns: {'; '.join(describe(j) for j in num_cols)}.",
+        )
+        dt = np.diff(t)
+        if len(t) > 2 and np.allclose(dt, dt[0], rtol=1e-6, atol=0):
+            kwargs.update(starting_time=float(t[0]), rate=float(1.0 / dt[0]))
+        else:
+            kwargs.update(timestamps=t)
+        if name in nwbfile.acquisition:
+            raise LayoutError(f"{path}: two files in this session are both named '{name}'.")
+        nwbfile.add_acquisition(TimeSeries(**kwargs))
+        added.append(f"TimeSeries '{name}': {len(t)} samples x {data.shape[1]} column(s), unit '{unit}'")
+    if txt_cols:
+        added.append(add_events(nwbfile, path, name if not num_cols else f"{name}_events", t, rows, header, txt_cols, describe))
+        if num_cols:
+            notes.append(f"{path}: text columns ({', '.join(header[j] for j in txt_cols)}) can't go in a time series, "
+                         "so they were saved as an events table next to it.")
+    return "; ".join(added)
+
+
+def add_events(nwbfile, path, name, t, rows, header, cols, describe):
+    """Text columns -> a table in processing/behavior: one row each time a label appears or changes."""
+    from hdmf.common import DynamicTable
+
+    mod = nwbfile.processing.get("behavior") or nwbfile.create_processing_module(
+        name="behavior", description="Behavior labels and events from the uploaded CSV files.")
+    if name in mod.data_interfaces:
+        raise LayoutError(f"{path}: two files in this session make a table named '{name}'.")
+    keep, prev = [], None
+    for i, r in enumerate(rows):
+        vals = tuple(r[j] for j in cols)
+        if any(v.strip().lower() not in MISSING for v in vals) and vals != prev:
+            keep.append(i)
+        prev = vals
+    table = DynamicTable(
         name=name,
-        data=data[:, 0] if data.shape[1] == 1 else data,
-        unit=unit,
-        description=f"From {PurePosixPath(path).name}. Columns: {', '.join(names)}.",
+        description=f"Text labels from {PurePosixPath(path).name}: one row each time a label appears or changes. "
+                    "'timestamp' is seconds from the session start.",
     )
-    dt = np.diff(t)
-    if len(t) > 2 and np.allclose(dt, dt[0], rtol=1e-6, atol=0):
-        kwargs.update(starting_time=float(t[0]), rate=float(1.0 / dt[0]))
-    else:
-        kwargs.update(timestamps=t)
-    if name in nwbfile.acquisition:
-        raise LayoutError(f"{path}: two files in this session are both named '{name}'.")
-    nwbfile.add_acquisition(TimeSeries(**kwargs))
-    return f"TimeSeries '{name}': {len(t)} samples x {data.shape[1]} column(s), unit '{unit}'"
+    table.add_column(name="timestamp", description="Time of the label, in seconds from the session start.")
+    col_names = []
+    for j in cols:
+        cn = safe_name(split_unit(header[j])[0])
+        while cn in ("timestamp", "id") or cn in col_names:
+            cn += "_"
+        col_names.append(cn)
+        table.add_column(name=cn, description=describe(j))
+    for i in keep:
+        table.add_row(timestamp=float(t[i]), **{cn: rows[i][j] for cn, j in zip(col_names, cols)})
+    mod.add(table)
+    return f"Events table '{name}': {len(keep)} rows (label changes), columns: {', '.join(col_names)}"
 
 
-def add_trials(nwbfile, path, data_bytes):
+def add_trials(nwbfile, path, data_bytes, col_notes=None):
+    col_notes = col_notes or {}
     header, rows = read_csv_rows(path, data_bytes)
     if [h.lower() for h in header[:2]] != ["start_time", "stop_time"]:
         raise LayoutError(f"{path}: must start with the columns 'start_time' and 'stop_time' (seconds).")
@@ -308,13 +388,10 @@ def add_trials(nwbfile, path, data_bytes):
     numeric = {}
     for j, c in enumerate(extra, start=2):
         vals = [r[j] for r in rows if len(r) > j and r[j] != ""]
-        try:
-            [float(v) for v in vals]
-            numeric[c] = True
-        except ValueError:
-            numeric[c] = False
+        numeric[c] = all(is_number(v) for v in vals)
     for c in extra:
-        nwbfile.add_trial_column(name=safe_name(c), description=f"'{c}' from trials.csv")
+        d = col_notes.get(("trials.csv", c.lower()))
+        nwbfile.add_trial_column(name=safe_name(c), description=d or f"'{c}' from trials.csv")
     for i, r in enumerate(rows, start=2):
         if len(r) != len(header):
             raise LayoutError(f"{path} row {i}: expected {len(header)} values, found {len(r)}.")
@@ -325,7 +402,7 @@ def add_trials(nwbfile, path, data_bytes):
         if stop < start:
             raise LayoutError(f"{path} row {i}: stop_time is before start_time.")
         vals = {
-            safe_name(c): ((float(v) if v != "" else np.nan) if numeric[c] else v)
+            safe_name(c): (to_float(v) if numeric[c] else v)
             for c, v in zip(extra, r[2:])
         }
         nwbfile.add_trial(start_time=start, stop_time=stop, **vals)
@@ -404,15 +481,17 @@ def build_session(ses, subjects, devices, dataset, files, notes):
         )
 
     folder = f"sub-{subj_id}/ses-{sid}/"
-    data_files = sorted(k for k in files if k.startswith(folder) and k.lower().endswith(".csv"))
+    data_files = sorted(k for k in files if k.startswith(folder) and k.lower().endswith(".csv")
+                        and PurePosixPath(k).name.lower() != "columns.csv")
+    col_notes = read_column_notes(files, folder)
     if not data_files:
         raise LayoutError(f"{where}: no CSV files found in the folder {folder}")
     added = []
     for path in data_files:
         if PurePosixPath(path).name.lower() == "trials.csv":
-            added.append(add_trials(nwbfile, path, files[path]))
+            added.append(add_trials(nwbfile, path, files[path], col_notes))
         else:
-            added.append(add_timeseries(nwbfile, path, files[path], notes))
+            added.append(add_timeseries(nwbfile, path, files[path], notes, col_notes))
     return nwbfile, f"sub-{subj_id}_ses-{sid}.nwb", added
 
 
@@ -511,7 +590,10 @@ def read_simple_sheet(data):
                 continue
             v = r[v_col]
             if isinstance(v, datetime):
-                v = v.date().isoformat() if v.time() == time(0) else v.isoformat()
+                if v.date() in (date(1899, 12, 30), date(1899, 12, 31), date(1900, 1, 1)):
+                    v = v.time().isoformat()  # a time-only cell
+                else:
+                    v = v.date().isoformat() if v.time() == time(0) else v.isoformat()
             elif isinstance(v, (date, time)):
                 v = v.isoformat()
             out[clean_header(r[f_col])] = as_text(v)

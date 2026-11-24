@@ -1,7 +1,7 @@
 // NWB viewer UI. All file reading happens in h5worker.js; this module draws and navigates.
 // renderNwb(el, source, name): source is a Uint8Array, a File, or {url, size}.
 
-const VERSION = "2026-11-22f";
+const VERSION = "2026-11-24a";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const PALETTE = ["#2a6fdb", "#e8590c", "#2b9348", "#9c36b5", "#c92a2a", "#0b7285", "#5c940d", "#d6336c"];
 const BAND = ["rgba(42,111,219,.14)", "rgba(232,89,12,.14)", "rgba(43,147,72,.14)", "rgba(156,54,181,.14)", "rgba(201,42,42,.14)", "rgba(11,114,133,.14)"];
